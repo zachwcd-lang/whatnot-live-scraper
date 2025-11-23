@@ -12,14 +12,23 @@
   ],
   "content_scripts": [
     {
-      "matches": ["*://whatnot.com/dashboard/live/*"],
+      "matches": [
+        "*://whatnot.com/dashboard/live/*",
+        "*://www.whatnot.com/dashboard/live/*",
+        "https://whatnot.com/dashboard/live/*",
+        "https://www.whatnot.com/dashboard/live/*"
+      ],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Whatnot Live Scraper"
+  },
+  "background": {
+    "service_worker": "background.js"
   }
 }
 
