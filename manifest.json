@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Whatnot Live Scraper",
+  "version": "1.0.0",
+  "description": "Scrapes live sales data from Whatnot streaming platform",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://whatnot.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://whatnot.com/dashboard/live/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Whatnot Live Scraper"
+  }
+}
+
