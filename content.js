@@ -825,9 +825,10 @@
         grossSales: grossSales,
         estimatedOrders: estimatedOrders,
         scheduledStartTime: scheduledStartTime,
-        hoursStreamed: showTimeHours, // Show Time counter in hours
         lastActivityTime: lastActivityTime, // Include separately for backend reference
-        streamEnded: true // Mark as final
+        streamEnded: true, // Mark as final
+        streamerName: "Unknown", // Default value, can be extracted later if needed
+        hoursStreamed: showTimeHours // Show Time counter in hours
       };
       
       console.log('[Whatnot Scraper] FINAL scraped data:', finalData);
@@ -921,8 +922,10 @@
       grossSales: grossSales,
       estimatedOrders: estimatedOrders,
       scheduledStartTime: scheduledStartTime,
-      hoursStreamed: showTimeHours, // Show Time counter in hours
-      streamEnded: false // Stream is still live
+      lastActivityTime: null, // Not available for live streams
+      streamEnded: false,
+      streamerName: "Unknown", // Default value, can be extracted later if needed
+      hoursStreamed: showTimeHours // Show Time counter in hours
     };
 
     // Log start message and URL extraction details on first successful scrape
