@@ -943,6 +943,7 @@
     console.log('[Whatnot Scraper] Scraped data:', {
       sales: data.grossSales,
       orders: data.estimatedOrders,
+      hoursStreamed: data.hoursStreamed,
       scheduledTime: data.scheduledStartTime || 'Not found',
       url: data.streamUrl
     });
@@ -1015,6 +1016,9 @@
     // Retry logic with exponential backoff
     for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
       try {
+        // Log the exact payload being sent to backend
+        console.log('[Whatnot Scraper] Sending payload:', JSON.stringify(data, null, 2));
+        
         const response = await fetch(APPS_SCRIPT_URL, {
           method: 'POST',
           mode: 'no-cors', // Required for Apps Script CORS handling
