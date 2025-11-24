@@ -258,6 +258,54 @@
   }
 
   /**
+   * Extract Show Time counter from the page
+   * Parses the elapsed stream time (format: HH:MM:SS or MM:SS)
+   * @returns {number|null} - Hours streamed as decimal rounded to 2 decimals (e.g., 2.26 for 2h 15m 30s) or null if not found
+   */
+  function extractShowTime() {
+    try {
+      // Look for "Show Time:" text in the page
+      const allElements = document.querySelectorAll('div, span, p');
+      
+      for (const element of allElements) {
+        const text = element.textContent.trim();
+        
+        // Check if element contains "Show Time:"
+        if (text.includes('Show Time:')) {
+          console.log('[Whatnot Scraper] Found Show Time element:', text);
+          
+          // Try to match HH:MM:SS format
+          let match = text.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+          if (match) {
+            const hours = parseInt(match[1]);
+            const minutes = parseInt(match[2]);
+            const seconds = parseInt(match[3]);
+            const totalHours = hours + (minutes / 60) + (seconds / 3600);
+            console.log('[Whatnot Scraper] Parsed Show Time (HH:MM:SS):', totalHours.toFixed(2), 'hours');
+            return Math.round(totalHours * 100) / 100; // Round to 2 decimals
+          }
+          
+          // Try to match MM:SS format (streams under 1 hour)
+          match = text.match(/(\d{1,2}):(\d{2})/);
+          if (match) {
+            const minutes = parseInt(match[1]);
+            const seconds = parseInt(match[2]);
+            const totalHours = (minutes / 60) + (seconds / 3600);
+            console.log('[Whatnot Scraper] Parsed Show Time (MM:SS):', totalHours.toFixed(2), 'hours');
+            return Math.round(totalHours * 100) / 100; // Round to 2 decimals
+          }
+        }
+      }
+      
+      console.log('[Whatnot Scraper] Warning: Could not find Show Time counter');
+      return null;
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error extracting Show Time:', error);
+      return null;
+    }
+  }
+
+  /**
    * Find the Activity feed container element
    * Looks for the container that holds activity feed items after Activity tab is clicked
    * @returns {HTMLElement|null} - The activity feed container or null if not found
@@ -728,6 +776,7 @@
       let grossSales = extractGrossSales();
       let estimatedOrders = extractEstimatedOrders();
       let scheduledStartTime = extractScheduledTime();
+      let showTimeHours = extractShowTime();
       
       // Extract last activity timestamp (actual stream end time)
       console.log('[Whatnot Scraper] Extracting last activity timestamp from Activity feed...');
@@ -740,6 +789,7 @@
         grossSales = grossSales || extractGrossSales();
         estimatedOrders = estimatedOrders || extractEstimatedOrders();
         scheduledStartTime = scheduledStartTime || extractScheduledTime();
+        showTimeHours = showTimeHours || extractShowTime();
       }
       
       // Extract stream ID and normalize URL
@@ -757,8 +807,14 @@
       console.log('[Whatnot Scraper] Final scrape results:', {
         grossSales: grossSales,
         estimatedOrders: estimatedOrders,
-        scheduledStartTime: scheduledStartTime
+        scheduledStartTime: scheduledStartTime,
+        showTimeHours: showTimeHours
       });
+      
+      // Log hours streamed if found
+      if (showTimeHours !== null) {
+        console.log('[Whatnot Scraper] Hours streamed:', showTimeHours);
+      }
       
       // Prepare final data object
       // Use lastActivityTime as timestamp if available (more accurate than current time)
@@ -769,6 +825,7 @@
         grossSales: grossSales,
         estimatedOrders: estimatedOrders,
         scheduledStartTime: scheduledStartTime,
+        hoursStreamed: showTimeHours, // Show Time counter in hours
         lastActivityTime: lastActivityTime, // Include separately for backend reference
         streamEnded: true // Mark as final
       };
@@ -808,6 +865,7 @@
     // Normal scraping continues if stream not ended
     const grossSales = extractGrossSales();
     const estimatedOrders = extractEstimatedOrders();
+    const showTimeHours = extractShowTime();
 
     // Check if both values were found
     if (grossSales === null && estimatedOrders === null) {
@@ -849,6 +907,11 @@
       console.warn('[Whatnot Scraper] Warning: Could not find scheduled start time');
     }
 
+    // Log Show Time hours if found
+    if (showTimeHours !== null) {
+      console.log('[Whatnot Scraper] Hours streamed:', showTimeHours);
+    }
+
     // Prepare data object
     const timestamp = new Date().toISOString();
     const data = {
@@ -858,6 +921,7 @@
       grossSales: grossSales,
       estimatedOrders: estimatedOrders,
       scheduledStartTime: scheduledStartTime,
+      hoursStreamed: showTimeHours, // Show Time counter in hours
       streamEnded: false // Stream is still live
     };
 
