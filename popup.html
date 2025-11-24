@@ -17,6 +17,15 @@
       <p>Check the browser console for scraped data.</p>
       <p>Monitoring runs automatically on live dashboard pages.</p>
     </div>
+    <div class="settings">
+      <h2>Settings</h2>
+      <div class="setting-item">
+        <label for="scrape-interval">Scraping Interval (seconds):</label>
+        <input type="number" id="scrape-interval" min="10" max="300" value="60" />
+        <button id="save-interval">Save</button>
+      </div>
+      <p class="setting-note">Current interval: <span id="current-interval">60</span> seconds</p>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>

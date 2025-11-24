@@ -6,33 +6,44 @@
 (function() {
   'use strict';
 
-  // Immediate log to confirm script loaded - try multiple methods
+  // Log script initialization
   console.log('[Whatnot Scraper] Content script initialized');
-  console.warn('[Whatnot Scraper] Content script loaded at', new Date().toISOString());
-  console.error('[Whatnot Scraper] TEST - If you see this, the script is running');
-  
-  // Create a visible DOM element to confirm script loaded
-  try {
-    const testDiv = document.createElement('div');
-    testDiv.id = 'whatnot-scraper-test';
-    testDiv.style.cssText = 'position:fixed;top:10px;right:10px;background:red;color:white;padding:10px;z-index:99999;font-family:monospace;font-size:12px;border:2px solid black;';
-    testDiv.textContent = '[Whatnot Scraper] LOADED - Check console!';
-    document.body.appendChild(testDiv);
-    
-    // Remove after 5 seconds
-    setTimeout(() => {
-      if (testDiv.parentNode) {
-        testDiv.parentNode.removeChild(testDiv);
-      }
-    }, 5000);
-  } catch (e) {
-    console.error('[Whatnot Scraper] Could not create test element:', e);
-  }
 
-  const SCRAPE_INTERVAL_MS = 30000; // 30 seconds
+  const DEFAULT_SCRAPE_INTERVAL_MS = 120000; // 2 minutes (120 seconds)
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwonHuSGAmWps2FlO7EhMWxoGoAq4006EI40cFiyaDlOyDGJOSWmCycz-Bs5yvwn9eX/exec';
+  const ENABLE_DATA_TRANSMISSION = true; // Feature flag to enable/disable data transmission
+  const MAX_RETRY_ATTEMPTS = 3;
+  const RETRY_DELAYS = [1000, 2000, 4000]; // Exponential backoff delays in ms
+  
   let monitoringInterval = null;
   let consecutiveFailures = 0;
   let hasLoggedStartMessage = false;
+  let currentScrapeInterval = DEFAULT_SCRAPE_INTERVAL_MS;
+  let finalDataSent = false; // Track if final data has been sent after stream end
+
+  /**
+   * Extract stream ID from any Whatnot URL format
+   * Handles both public links (/live/...) and dashboard links (/dashboard/live/...)
+   * @param {string} url - The URL to extract stream ID from
+   * @returns {string|null} - The stream ID or null if not found
+   */
+  function getStreamId(url) {
+    if (!url) return null;
+    
+    // Match stream ID from either /live/{id} or /dashboard/live/{id}
+    const match = url.match(/\/(?:live|dashboard\/live)\/([\w-]+)/);
+    return match ? match[1] : null;
+  }
+
+  /**
+   * Normalize stream ID to standard dashboard URL format
+   * @param {string} streamId - The stream ID to normalize
+   * @returns {string} - Normalized dashboard URL
+   */
+  function normalizeToDashboardUrl(streamId) {
+    if (!streamId) return null;
+    return `https://www.whatnot.com/dashboard/live/${streamId}`;
+  }
 
   /**
    * Find an element by its exact text content
@@ -148,83 +159,565 @@
 
   /**
    * Extract Gross Sales value from the page
+   * Uses multiple strategies to find the value, especially for ended streams
    * @returns {number|null} - Gross sales amount or null if not found
    */
   function extractGrossSales() {
+    // Strategy 1: Find label and traverse DOM
     const labelElement = findElementByText('Gross Sales');
-    if (!labelElement) {
-      // Debug: Try to find similar text
-      const allText = Array.from(document.querySelectorAll('*'))
-        .map(el => el.textContent?.trim())
-        .filter(text => text && (text.includes('Gross') || text.includes('Sales')))
-        .slice(0, 5);
-      if (allText.length > 0) {
-        console.log('[Whatnot Scraper] Debug: Found text containing "Gross" or "Sales":', allText);
+    if (labelElement) {
+      const valueElement = findValueElement(labelElement);
+      if (valueElement) {
+        const valueText = valueElement.textContent || '';
+        const parsed = parseDollarAmount(valueText);
+        if (parsed !== null) return parsed;
       }
-      return null;
+      
+      // Try parent container text
+      const parentText = labelElement.parentElement?.textContent || '';
+      const parsed = parseDollarAmount(parentText);
+      if (parsed !== null) return parsed;
+      
+      // Try grandparent container text
+      const grandparentText = labelElement.parentElement?.parentElement?.textContent || '';
+      const parsed2 = parseDollarAmount(grandparentText);
+      if (parsed2 !== null) return parsed2;
     }
-
-    const valueElement = findValueElement(labelElement);
-    if (!valueElement) {
-      console.log('[Whatnot Scraper] Debug: Found Gross Sales label but no value element nearby');
-      return null;
-    }
-
-    const valueText = valueElement.textContent || '';
-    const parentText = labelElement.parentElement?.textContent || '';
     
-    // Try parsing from value element or parent container
-    const result = parseDollarAmount(valueText) || parseDollarAmount(parentText);
-    if (result === null) {
-      console.log('[Whatnot Scraper] Debug: Could not parse dollar amount from:', { valueText: valueText.substring(0, 50), parentText: parentText.substring(0, 100) });
+    // Strategy 2: Search entire page for "Gross Sales" followed by dollar amount
+    try {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const text = el.textContent || '';
+        if (text.includes('Gross Sales')) {
+          // Look for dollar amount in this element or nearby
+          const dollarMatch = text.match(/Gross Sales[:\s]*\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/);
+          if (dollarMatch) {
+            const cleaned = dollarMatch[1].replace(/,/g, '');
+            const parsed = parseFloat(cleaned);
+            if (!isNaN(parsed)) return parsed;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error in fallback Gross Sales extraction:', error);
     }
-    return result;
+    
+    return null;
   }
 
   /**
    * Extract Estimated Orders value from the page
+   * Uses multiple strategies to find the value, especially for ended streams
    * @returns {number|null} - Estimated orders count or null if not found
    */
   function extractEstimatedOrders() {
+    // Strategy 1: Find label and traverse DOM
     const labelElement = findElementByText('Estimated Orders');
-    if (!labelElement) {
-      // Debug: Try to find similar text
-      const allText = Array.from(document.querySelectorAll('*'))
-        .map(el => el.textContent?.trim())
-        .filter(text => text && (text.includes('Estimated') || text.includes('Orders')))
-        .slice(0, 5);
-      if (allText.length > 0) {
-        console.log('[Whatnot Scraper] Debug: Found text containing "Estimated" or "Orders":', allText);
+    if (labelElement) {
+      const valueElement = findValueElement(labelElement);
+      if (valueElement) {
+        const valueText = valueElement.textContent || '';
+        // Try to extract number from value text
+        const parsed = parseInteger(valueText);
+        if (parsed !== null && valueText !== labelElement.textContent) return parsed;
       }
+      
+      // Try parent container text
+      const parentText = labelElement.parentElement?.textContent || '';
+      const cleanedParentText = parentText.replace(/Estimated Orders/gi, '').trim();
+      const parsed = parseInteger(cleanedParentText);
+      if (parsed !== null) return parsed;
+      
+      // Try grandparent container text
+      const grandparentText = labelElement.parentElement?.parentElement?.textContent || '';
+      const cleanedGrandparentText = grandparentText.replace(/Estimated Orders/gi, '').trim();
+      const parsed2 = parseInteger(cleanedGrandparentText);
+      if (parsed2 !== null) return parsed2;
+    }
+    
+    // Strategy 2: Search entire page for "Estimated Orders" followed by number
+    try {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const text = el.textContent || '';
+        if (text.includes('Estimated Orders')) {
+          // Look for number after "Estimated Orders"
+          const numberMatch = text.match(/Estimated Orders[:\s]*(\d+)/i);
+          if (numberMatch) {
+            const parsed = parseInt(numberMatch[1], 10);
+            if (!isNaN(parsed)) return parsed;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error in fallback Estimated Orders extraction:', error);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Find the Activity feed container element
+   * Looks for the container that holds activity feed items after Activity tab is clicked
+   * @returns {HTMLElement|null} - The activity feed container or null if not found
+   */
+  function findActivityFeedContainer() {
+    try {
+      // Strategy 1: Find Activity tab and traverse to find content container
+      const activityTab = Array.from(document.querySelectorAll('*')).find(el => {
+        const text = el.textContent || '';
+        const tagName = el.tagName.toLowerCase();
+        return (text.trim() === 'Activity' || text.includes('Activity')) && 
+               (tagName === 'button' || tagName === 'div' || tagName === 'a');
+      });
+
+      if (activityTab) {
+        // Look for common container patterns near the Activity tab
+        let current = activityTab.parentElement;
+        let depth = 0;
+        
+        while (current && depth < 5) {
+          // Check if this container has activity-related content
+          const text = current.textContent || '';
+          if (text.includes('won the auction') || text.includes('placed a bid')) {
+            // This might be the container, but verify it has multiple activity items
+            const activityCount = Array.from(current.querySelectorAll('*')).filter(el => {
+              const elText = el.textContent || '';
+              return (elText.includes('won the auction') || elText.includes('placed a bid')) &&
+                     /\d+[smhd]/.test(elText);
+            }).length;
+            
+            if (activityCount >= 2) {
+              console.log('[Whatnot Scraper] Found activity container with', activityCount, 'activity items');
+              return current;
+            }
+          }
+          current = current.parentElement;
+          depth++;
+        }
+      }
+
+      // Strategy 2: Look for scrollable containers with activity content
+      const scrollableContainers = Array.from(document.querySelectorAll('*')).filter(el => {
+        const style = window.getComputedStyle(el);
+        return (style.overflow === 'auto' || style.overflow === 'scroll' || 
+                style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+               el.scrollHeight > el.clientHeight;
+      });
+
+      for (const container of scrollableContainers) {
+        const text = container.textContent || '';
+        if (text.includes('won the auction') && text.includes('placed a bid')) {
+          const activityCount = Array.from(container.querySelectorAll('*')).filter(el => {
+            const elText = el.textContent || '';
+            return (elText.includes('won the auction') || elText.includes('placed a bid')) &&
+                   /\d+[smhd]/.test(elText);
+          }).length;
+          
+          if (activityCount >= 2) {
+            console.log('[Whatnot Scraper] Found scrollable activity container with', activityCount, 'items');
+            return container;
+          }
+        }
+      }
+
+      // Strategy 3: Look for elements containing multiple activity patterns
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const text = el.textContent || '';
+        // Look for elements that contain multiple activity items
+        const activityMatches = (text.match(/won the auction/gi) || []).length;
+        if (activityMatches >= 2) {
+          // Check if this element's children contain activity items with timestamps
+          const children = Array.from(el.querySelectorAll('*'));
+          const validActivities = children.filter(child => {
+            const childText = child.textContent || '';
+            return (childText.includes('won the auction') || childText.includes('placed a bid')) &&
+                   /\d+[smhd]/.test(childText);
+          });
+          
+          if (validActivities.length >= 2) {
+            console.log('[Whatnot Scraper] Found activity container element with', validActivities.length, 'activities');
+            return el;
+          }
+        }
+      }
+
+      console.log('[Whatnot Scraper] Could not find activity feed container');
+      return null;
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error finding activity container:', error);
       return null;
     }
+  }
 
-    const valueElement = findValueElement(labelElement);
-    if (!valueElement) {
-      console.log('[Whatnot Scraper] Debug: Found Estimated Orders label but no value element nearby');
+  /**
+   * Extract last activity timestamp from Activity feed
+   * Looks for actual sales/auction activity with relative timestamps like "1h ago", "30m ago"
+   * Returns the OLDEST activity timestamp (furthest back in time = when stream ended)
+   * @returns {Promise<string|null>} - ISO timestamp string or null if not found
+   */
+  async function extractLastActivityTimestamp() {
+    try {
+      console.log('[Whatnot Scraper] Extracting last activity timestamp from Activity feed...');
+      
+      // Find and click Activity tab if it exists
+      const activityTab = Array.from(document.querySelectorAll('*')).find(el => {
+        const text = el.textContent || '';
+        const tagName = el.tagName.toLowerCase();
+        return (text.trim() === 'Activity' || text.includes('Activity')) && 
+               (tagName === 'button' || tagName === 'div' || tagName === 'a');
+      });
+
+      if (activityTab) {
+        // Click Activity tab to ensure it's visible
+        try {
+          activityTab.click();
+          console.log('[Whatnot Scraper] Clicked Activity tab');
+        } catch (e) {
+          // Tab might already be active or not clickable, that's OK
+          console.log('[Whatnot Scraper] Activity tab click failed (may already be active)');
+        }
+
+        // Wait longer for activity feed to load asynchronously (1.5-2 seconds)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('[Whatnot Scraper] Waited 2 seconds for Activity feed to load');
+      } else {
+        console.log('[Whatnot Scraper] Activity tab not found, trying to find container anyway');
+      }
+
+      // Find the Activity feed container
+      const activityContainer = findActivityFeedContainer();
+      
+      // Determine search scope - use container if found, otherwise search entire page (fallback)
+      const searchScope = activityContainer || document;
+      const scopeName = activityContainer ? 'activity container' : 'entire page (fallback)';
+      console.log('[Whatnot Scraper] Searching within:', scopeName);
+
+      // Look for activity items within the container (or entire page as fallback)
+      const allElements = Array.from(searchScope.querySelectorAll('*'));
+      
+      const activityElements = allElements.filter(el => {
+        const text = el.textContent || '';
+        
+        // Look for actual sale/auction activity indicators
+        const hasActivity = text.includes('won the auction') || 
+                           text.includes('placed a bid') ||
+                           text.includes('placed bid') ||
+                           text.includes('purchased') ||
+                           (text.includes('won') && text.includes('auction'));
+        
+        // Must have time indicator (1h, 30m, 2d, etc.)
+        const hasTimeIndicator = /\d+[smhd]/.test(text);
+        
+        // Exclude channel status messages and navigation
+        const isNotStatus = !text.includes('is live') && 
+                           !text.includes('is offline') &&
+                           !text.toLowerCase().includes('channel') &&
+                           !text.includes('HomeBrowse') && // Exclude navigation
+                           !text.includes('Refer a Buyer'); // Exclude other UI elements
+        
+        // Additional validation: Should look like activity item (username + action + time)
+        const looksLikeActivity = hasActivity && hasTimeIndicator && text.length < 500; // Activity items are typically short
+        
+        return hasActivity && hasTimeIndicator && isNotStatus && looksLikeActivity;
+      });
+      
+      if (activityElements.length === 0) {
+        console.log('[Whatnot Scraper] No activity items found in feed');
+        return null;
+      }
+      
+      console.log('[Whatnot Scraper] Found ' + activityElements.length + ' activity items');
+      
+      // Parse all timestamps and find the OLDEST one (furthest in past = when stream ended)
+      const now = new Date();
+      let oldestActivityTime = null;
+      let oldestActivityText = '';
+      let oldestMsAgo = 0;
+      
+      // Try multiple regex patterns to match different timestamp formats
+      const timePatterns = [
+        /·\s*(\d+)\s*([smhd])\b/i,           // "· 5h" (middle dot)
+        /•\s*(\d+)\s*([smhd])\b/i,           // "• 5h" (bullet)
+        /(\d+)\s*([smhd])\s*ago/i,           // "5h ago"
+        /(\d+)\s*([smhd])\b/i,                // "5h", "30m", "2d"
+        /\s(\d+)\s*([smhd])\b/i               // Any number + time unit (space before)
+      ];
+      
+      // Debug: Log all activity items to see what we're working with
+      activityElements.forEach((el, index) => {
+        const text = el.textContent || '';
+        console.log(`[Whatnot Scraper] Activity ${index + 1}: "${text.substring(0, 150)}"`);
+        
+        // Try each pattern until one matches
+        let timeMatch = null;
+        let matchedPattern = null;
+        for (const pattern of timePatterns) {
+          timeMatch = text.match(pattern);
+          if (timeMatch) {
+            matchedPattern = pattern.toString();
+            console.log(`[Whatnot Scraper]   ✓ Matched pattern -> ${timeMatch[1]}${timeMatch[2]}`);
+            break;
+          }
+        }
+        
+        if (!timeMatch) {
+          console.log(`[Whatnot Scraper]   ⚠ No time pattern matched in this activity`);
+        }
+      });
+      
+      // Now parse timestamps using the patterns
+      for (const el of activityElements) {
+        const text = el.textContent || '';
+        
+        // Try each pattern until one matches
+        let timeMatch = null;
+        for (const pattern of timePatterns) {
+          timeMatch = text.match(pattern);
+          if (timeMatch) break;
+        }
+        
+        if (timeMatch) {
+          const value = parseInt(timeMatch[1], 10);
+          const unit = timeMatch[2].toLowerCase();
+          
+          if (!isNaN(value) && value > 0 && value < 1000) { // Reasonable limits
+            let msAgo = 0;
+            if (unit === 's') {
+              msAgo = value * 1000; // seconds
+            } else if (unit === 'm') {
+              msAgo = value * 60 * 1000; // minutes
+            } else if (unit === 'h') {
+              msAgo = value * 60 * 60 * 1000; // hours
+            } else if (unit === 'd') {
+              msAgo = value * 24 * 60 * 60 * 1000; // days
+            }
+            
+            // Only consider activities within last 7 days (reasonable limit)
+            if (msAgo > 0 && msAgo < 7 * 24 * 60 * 60 * 1000) {
+              const activityTime = new Date(now.getTime() - msAgo);
+              
+              // We want the OLDEST activity (furthest back in time = largest msAgo)
+              // This represents when the stream actually ended
+              if (!oldestActivityTime || msAgo > oldestMsAgo) {
+                oldestActivityTime = activityTime;
+                oldestMsAgo = msAgo;
+                oldestActivityText = text.substring(0, 150); // First 150 chars for logging
+              }
+            }
+          }
+        }
+      }
+      
+      if (oldestActivityTime) {
+        console.log('[Whatnot Scraper] Oldest activity found at:', oldestActivityTime.toISOString());
+        console.log('[Whatnot Scraper] Activity text:', oldestActivityText);
+        console.log('[Whatnot Scraper] Time ago:', Math.round(oldestMsAgo / (60 * 60 * 1000) * 10) / 10, 'hours');
+        return oldestActivityTime.toISOString();
+      }
+      
+      console.log('[Whatnot Scraper] Could not parse activity timestamps');
+      return null;
+      
+    } catch (error) {
+      console.warn('[Whatnot Scraper] Error extracting activity timestamp:', error);
       return null;
     }
+  }
 
-    const valueText = valueElement.textContent || '';
-    const parentText = labelElement.parentElement?.textContent || '';
-    
-    // Extract numeric value, excluding the label text
-    const fullText = valueText !== labelElement.textContent 
-      ? valueText 
-      : parentText.replace(/Estimated Orders/gi, '').trim();
-    
-    const result = parseInteger(fullText);
-    if (result === null) {
-      console.log('[Whatnot Scraper] Debug: Could not parse integer from:', { valueText: valueText.substring(0, 50), parentText: parentText.substring(0, 100) });
+  /**
+   * Check if stream has ended by looking for "Show Has Ended" banner/text
+   * This is the concrete, definitive signal that the stream has ended
+   * @returns {boolean} - True if stream has ended, false otherwise
+   */
+  function isStreamEnded() {
+    try {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const endedElement = allElements.find(el => {
+        const text = el.textContent || '';
+        return text.includes('Show Has Ended') || 
+               text.includes('Show has ended') || 
+               text.includes('Stream has ended');
+      });
+      
+      if (endedElement) {
+        console.log('[Whatnot Scraper] STREAM END DETECTED: Found "Show Has Ended" banner');
+        return true;
+      }
+      
+      return false;
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error checking stream end status:', error);
+      return false;
     }
-    return result;
+  }
+
+  /**
+   * Load scraping interval from storage or use default
+   * @returns {Promise<number>} - Scraping interval in milliseconds
+   */
+  async function loadScrapeInterval() {
+    try {
+      const result = await chrome.storage.sync.get(['scrapeInterval']);
+      if (result.scrapeInterval && typeof result.scrapeInterval === 'number' && result.scrapeInterval >= 10000) {
+        // Minimum 10 seconds
+        return result.scrapeInterval;
+      }
+    } catch (error) {
+      console.warn('[Whatnot Scraper] Could not load scrape interval from storage, using default:', error);
+    }
+    return DEFAULT_SCRAPE_INTERVAL_MS;
+  }
+
+  /**
+   * Extract Scheduled Start Time from the page
+   * Format: "Scheduled: MM/DD HH:MMAM/PM"
+   * Example: "Scheduled: 11/23 10:00AM"
+   * Uses multiple strategies to find the value, especially for ended streams
+   * @returns {string|null} - Scheduled start time string or null if not found
+   */
+  function extractScheduledTime() {
+    try {
+      // Strategy 1: Search for element containing "Scheduled:" text
+      const allElements = Array.from(document.querySelectorAll('*'));
+      
+      // Find all elements that contain "Scheduled:" text
+      const scheduledElements = allElements.filter(el => {
+        const text = el.textContent || '';
+        return text.includes('Scheduled:');
+      });
+
+      // Try each element that contains "Scheduled:"
+      for (const scheduledElement of scheduledElements) {
+        const elementText = scheduledElement.textContent || '';
+        
+        // Extract time using regex: "Scheduled: MM/DD HH:MMAM/PM"
+        // Pattern matches: "Scheduled: 11/23 10:00AM" or "Scheduled: 1/5 9:30PM"
+        const match = elementText.match(/Scheduled:\s*(\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+        
+        if (match && match[1]) {
+          return match[1].trim(); // Returns "11/23 10:00AM"
+        }
+        
+        // Also check parent containers
+        let parent = scheduledElement.parentElement;
+        for (let i = 0; i < 3 && parent; i++) {
+          const parentText = parent.textContent || '';
+          const parentMatch = parentText.match(/Scheduled:\s*(\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+          if (parentMatch && parentMatch[1]) {
+            return parentMatch[1].trim();
+          }
+          parent = parent.parentElement;
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error extracting scheduled time:', error);
+      return null;
+    }
   }
 
   /**
    * Scrape data from the page and log it
+   * Handles stream end detection and final data send
    * @returns {Object|null} - Scraped data object or null if scrape failed
    */
-  function scrapeData() {
+  async function scrapeData() {
+    // Check if stream has ended FIRST (before scraping)
+    const streamHasEnded = isStreamEnded();
+    
+    // If stream ended and we haven't sent final data yet
+    if (streamHasEnded && !finalDataSent) {
+      console.log('[Whatnot Scraper] Stream ended detected. Performing final scrape before stopping...');
+      
+      // Wait a moment for page to stabilize after stream end detection
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Perform final scrape with multiple attempts if needed
+      let grossSales = extractGrossSales();
+      let estimatedOrders = extractEstimatedOrders();
+      let scheduledStartTime = extractScheduledTime();
+      
+      // Extract last activity timestamp (actual stream end time)
+      console.log('[Whatnot Scraper] Extracting last activity timestamp from Activity feed...');
+      const lastActivityTime = await extractLastActivityTimestamp();
+      
+      // If values not found, try one more time after a short delay
+      if ((grossSales === null || estimatedOrders === null) && !finalDataSent) {
+        console.log('[Whatnot Scraper] Values not found on first attempt, retrying...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        grossSales = grossSales || extractGrossSales();
+        estimatedOrders = estimatedOrders || extractEstimatedOrders();
+        scheduledStartTime = scheduledStartTime || extractScheduledTime();
+      }
+      
+      // Extract stream ID and normalize URL
+      const currentUrl = window.location.href;
+      const streamId = getStreamId(currentUrl);
+      const normalizedUrl = normalizeToDashboardUrl(streamId);
+      
+      const currentTimestamp = new Date().toISOString();
+      
+      // Log what we found for debugging
+      console.log('[Whatnot Scraper] Stream end details:');
+      console.log('  - Current time:', currentTimestamp);
+      console.log('  - Last activity:', lastActivityTime || 'Not detected');
+      console.log('  - Will use last activity as end time if available');
+      console.log('[Whatnot Scraper] Final scrape results:', {
+        grossSales: grossSales,
+        estimatedOrders: estimatedOrders,
+        scheduledStartTime: scheduledStartTime
+      });
+      
+      // Prepare final data object
+      // Use lastActivityTime as timestamp if available (more accurate than current time)
+      const finalData = {
+        timestamp: lastActivityTime || currentTimestamp, // Use activity time if available
+        streamId: streamId,
+        streamUrl: normalizedUrl,
+        grossSales: grossSales,
+        estimatedOrders: estimatedOrders,
+        scheduledStartTime: scheduledStartTime,
+        lastActivityTime: lastActivityTime, // Include separately for backend reference
+        streamEnded: true // Mark as final
+      };
+      
+      console.log('[Whatnot Scraper] FINAL scraped data:', finalData);
+      
+      // Send final data to backend (send even if some values are null - backend can handle it)
+      if (streamId) {
+        try {
+          await sendDataToBackend(finalData);
+          console.log('[Whatnot Scraper] ✓ Final data sent successfully');
+        } catch (error) {
+          console.error('[Whatnot Scraper] Error sending final data:', error);
+        }
+      } else {
+        console.warn('[Whatnot Scraper] No stream ID found, cannot send final data');
+      }
+      
+      // Stop the monitoring interval
+      if (monitoringInterval) {
+        clearInterval(monitoringInterval);
+        monitoringInterval = null;
+      }
+      
+      // Mark final data as sent
+      finalDataSent = true;
+      
+      console.log('[Whatnot Scraper] ✓ Stream ended. Final data sent. Monitoring stopped.');
+      return finalData;
+    }
+    
+    // If stream already ended and final data sent, do nothing
+    if (streamHasEnded && finalDataSent) {
+      return null;
+    }
+
+    // Normal scraping continues if stream not ended
     const grossSales = extractGrossSales();
     const estimatedOrders = extractEstimatedOrders();
 
@@ -255,70 +748,199 @@
       consecutiveFailures = 0;
     }
 
-    // Log start message on first successful scrape
-    if (!hasLoggedStartMessage && (grossSales !== null || estimatedOrders !== null)) {
-      console.log(`[Whatnot Scraper] Monitoring started successfully. Scraping every ${SCRAPE_INTERVAL_MS / 1000} seconds.`);
-      hasLoggedStartMessage = true;
+    // Extract stream ID and normalize URL
+    const currentUrl = window.location.href;
+    const streamId = getStreamId(currentUrl);
+    const normalizedUrl = normalizeToDashboardUrl(streamId);
+
+    // Extract scheduled start time
+    const scheduledStartTime = extractScheduledTime();
+
+    // Log warning if scheduled time not found (non-critical)
+    if (!scheduledStartTime && (grossSales !== null || estimatedOrders !== null)) {
+      console.warn('[Whatnot Scraper] Warning: Could not find scheduled start time');
     }
 
     // Prepare data object
+    const timestamp = new Date().toISOString();
     const data = {
-      timestamp: new Date().toISOString(),
+      timestamp: timestamp,
+      streamId: streamId,
+      streamUrl: normalizedUrl,
       grossSales: grossSales,
       estimatedOrders: estimatedOrders,
-      streamUrl: window.location.href
+      scheduledStartTime: scheduledStartTime,
+      streamEnded: false // Stream is still live
     };
 
-    // Log successful scrape
-    console.log('[Whatnot Scraper] Scraped data:', data);
+    // Log start message and URL extraction details on first successful scrape
+    if (!hasLoggedStartMessage && (grossSales !== null || estimatedOrders !== null)) {
+      console.log(`[Whatnot Scraper] Monitoring started successfully. Scraping every ${currentScrapeInterval / 1000} seconds.`);
+      if (streamId) {
+        console.log('[Whatnot Scraper] Stream ID extracted:', streamId);
+        console.log('[Whatnot Scraper] Normalized URL:', normalizedUrl);
+      }
+      if (scheduledStartTime) {
+        console.log('[Whatnot Scraper] Scheduled start time found:', scheduledStartTime);
+      }
+      hasLoggedStartMessage = true;
+    }
+
+
+    // Log successful scrape with enhanced info
+    console.log('[Whatnot Scraper] Scraped data:', {
+      sales: data.grossSales,
+      orders: data.estimatedOrders,
+      scheduledTime: data.scheduledStartTime || 'Not found',
+      url: data.streamUrl
+    });
+    // Also log full data object for detailed inspection
+    console.log('[Whatnot Scraper] Full data object:', data);
+
+    // Send data to backend (don't block on failure)
+    // Only send if we have valid data and stream ID
+    if (streamId && (grossSales !== null || estimatedOrders !== null)) {
+      sendDataToBackend(data).then(success => {
+        if (success) {
+          console.log('[Whatnot Scraper] Data transmission status: SUCCESS');
+        } else {
+          console.warn('[Whatnot Scraper] Data transmission status: FAILED (check logs above)');
+        }
+      }).catch(error => {
+        console.warn('[Whatnot Scraper] Data transmission error (non-blocking):', error);
+      });
+    } else {
+      if (!streamId) {
+        console.warn('[Whatnot Scraper] Could not extract stream ID from URL. Data not sent:', currentUrl);
+      }
+    }
 
     return data;
   }
 
   /**
+   * Send scraped data to Google Apps Script endpoint with retry logic
+   * @param {Object} data - The scraped data object to send
+   * @returns {Promise<boolean>} - True if successful, false otherwise
+   */
+  async function sendDataToBackend(data) {
+    // Check feature flag
+    if (!ENABLE_DATA_TRANSMISSION) {
+      console.log('[Whatnot Scraper] Data transmission disabled. Data not sent:', data.streamId);
+      return false;
+    }
+
+    // Validate required fields - streamId is always required
+    if (!data.streamId) {
+      console.warn('[Whatnot Scraper] Missing streamId. Data not sent:', data);
+      return false;
+    }
+    
+    // For final data (streamEnded: true), allow null values since stream may have ended
+    // For live streams, both values should be present
+    if (!data.streamEnded && (data.grossSales === null || data.estimatedOrders === null)) {
+      console.warn('[Whatnot Scraper] Missing required fields for live stream. Data not sent:', {
+        hasStreamId: !!data.streamId,
+        hasGrossSales: data.grossSales !== null,
+        hasEstimatedOrders: data.estimatedOrders !== null,
+        streamEnded: data.streamEnded
+      });
+      return false;
+    }
+    
+    // Ensure values are valid numbers if they're not null
+    if (data.grossSales !== null && typeof data.grossSales !== 'number') {
+      console.warn('[Whatnot Scraper] Invalid grossSales data type. Data not sent:', data);
+      return false;
+    }
+    if (data.estimatedOrders !== null && typeof data.estimatedOrders !== 'number') {
+      console.warn('[Whatnot Scraper] Invalid estimatedOrders data type. Data not sent:', data);
+      return false;
+    }
+
+    let lastError = null;
+
+    // Retry logic with exponential backoff
+    for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetch(APPS_SCRIPT_URL, {
+          method: 'POST',
+          mode: 'no-cors', // Required for Apps Script CORS handling
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(data)
+        });
+
+        // With no-cors mode, we can't read the response, but if no error is thrown, assume success
+        console.log(`[Whatnot Scraper] Data sent successfully (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS}):`, data.streamId);
+        return true;
+      } catch (error) {
+        lastError = error;
+        
+        // If not the last attempt, wait before retrying
+        if (attempt < MAX_RETRY_ATTEMPTS - 1) {
+          const delay = RETRY_DELAYS[attempt] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
+          console.warn(`[Whatnot Scraper] Transmission failed (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS}), retrying in ${delay}ms...`, error);
+          
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    // All retry attempts failed
+    console.error(`[Whatnot Scraper] Data transmission failed after ${MAX_RETRY_ATTEMPTS} attempts:`, lastError);
+    return false;
+  }
+
+  /**
    * Start monitoring the page at regular intervals
    */
-  function startMonitoring() {
+  async function startMonitoring() {
     try {
-      console.log(`[Whatnot Scraper] Starting monitoring on ${window.location.href}`);
+      // Reset final data sent flag when starting monitoring
+      finalDataSent = false;
       
+      // Load scrape interval from storage
+      currentScrapeInterval = await loadScrapeInterval();
+      console.log('[Whatnot Scraper] Starting monitoring...');
+      console.log(`[Whatnot Scraper] Using scrape interval: ${currentScrapeInterval / 1000} seconds`);
+
       // Clear any existing interval
       if (monitoringInterval) {
         clearInterval(monitoringInterval);
+        monitoringInterval = null;
       }
 
-      // Initial scrape after a short delay to ensure DOM is ready
-      setTimeout(() => {
-        scrapeData();
-      }, 1000);
+      // Initial scrape immediately
+      scrapeData();
 
       // Set up interval for periodic scraping
       monitoringInterval = setInterval(() => {
         scrapeData();
-      }, SCRAPE_INTERVAL_MS);
-
-      console.log(`[Whatnot Scraper] Monitoring interval set to ${SCRAPE_INTERVAL_MS / 1000} seconds`);
+      }, currentScrapeInterval);
+      
+      console.log(`[Whatnot Scraper] Monitoring interval set to ${currentScrapeInterval / 1000} seconds`);
     } catch (error) {
       console.error('[Whatnot Scraper] Error in startMonitoring:', error);
+      // Fallback to default interval on error
+      currentScrapeInterval = DEFAULT_SCRAPE_INTERVAL_MS;
     }
   }
 
   // Start monitoring when script loads
   // Wait for page to be fully loaded, but also try immediately for SPAs
-  function initialize() {
+  async function initialize() {
     try {
       if (document.readyState === 'loading') {
-        console.log('[Whatnot Scraper] Waiting for DOMContentLoaded...');
         document.addEventListener('DOMContentLoaded', startMonitoring);
       } else {
-        console.log('[Whatnot Scraper] DOM already loaded, starting immediately');
-        startMonitoring();
+        await startMonitoring();
       }
 
       // Also try after page has had time to render (for React/Vue apps)
       setTimeout(() => {
         if (!hasLoggedStartMessage) {
-          console.log('[Whatnot Scraper] Attempting delayed initialization for SPA...');
           scrapeData();
         }
       }, 3000);
@@ -336,11 +958,9 @@
       try {
         const currentUrl = location.href;
         if (currentUrl !== lastUrl) {
-          console.log(`[Whatnot Scraper] URL changed: ${lastUrl} -> ${currentUrl}`);
           lastUrl = currentUrl;
           // Restart monitoring if URL changed but still on live dashboard
           if (currentUrl.includes('/dashboard/live/')) {
-            console.log('[Whatnot Scraper] Restarting monitoring for new live dashboard page');
             hasLoggedStartMessage = false;
             consecutiveFailures = 0;
             startMonitoring();
@@ -354,7 +974,6 @@
     console.error('[Whatnot Scraper] Error setting up MutationObserver:', error);
   }
 
-  console.log('[Whatnot Scraper] Content script setup complete');
 
 })();
 
