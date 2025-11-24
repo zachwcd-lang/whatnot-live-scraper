@@ -528,22 +528,110 @@
   }
 
   /**
+   * Check if an element is actually visible on the page
+   * @param {HTMLElement} el - Element to check
+   * @returns {boolean} - True if element is visible, false otherwise
+   */
+  function isElementVisible(el) {
+    try {
+      if (!el) return false;
+      
+      // Check if element has no offsetParent (hidden via CSS)
+      if (el.offsetParent === null && el.tagName !== 'BODY') {
+        return false;
+      }
+      
+      // Check computed style for display and visibility
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+        return false;
+      }
+      
+      // Check if element has zero dimensions
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Check if stream has ended by looking for "Show Has Ended" banner/text
    * This is the concrete, definitive signal that the stream has ended
+   * Prevents false positives by first checking for LIVE indicators and only matching visible elements
    * @returns {boolean} - True if stream has ended, false otherwise
    */
   function isStreamEnded() {
     try {
+      // STEP 1: First check for LIVE indicators - if found, stream is definitely not ended
       const allElements = Array.from(document.querySelectorAll('*'));
-      const endedElement = allElements.find(el => {
+      
+      // Check for "Show Time" duration counter (e.g., "Show Time: 00:15:26")
+      // This is a strong indicator that the stream is LIVE
+      const showTimePattern = /Show Time:?\s*\d{1,2}:\d{2}:\d{2}/i; // Matches "Show Time: 00:15:26" format
+      const hasShowTime = allElements.some(el => {
+        if (!isElementVisible(el)) return false;
         const text = el.textContent || '';
-        return text.includes('Show Has Ended') || 
-               text.includes('Show has ended') || 
-               text.includes('Stream has ended');
+        return showTimePattern.test(text);
+      });
+      
+      if (hasShowTime) {
+        console.log('[Whatnot Scraper] Show Time counter found - stream is active (LIVE)');
+        return false;
+      }
+      
+      const liveIndicators = allElements.filter(el => {
+        if (!isElementVisible(el)) return false;
+        const text = el.textContent || '';
+        const lowerText = text.toLowerCase();
+        
+        // Look for common LIVE indicators
+        return (lowerText.includes('live') && 
+                (lowerText.includes('going live') || 
+                 lowerText.includes('is live') ||
+                 lowerText.includes('live now') ||
+                 (el.getAttribute('data-testid') && el.getAttribute('data-testid').toLowerCase().includes('live')) ||
+                 (el.classList && Array.from(el.classList).some(c => c.toLowerCase().includes('live'))))) ||
+               // Look for LIVE badge/indicator
+               (el.getAttribute('data-testid') && el.getAttribute('data-testid').includes('live-indicator')) ||
+               (el.classList && Array.from(el.classList).some(c => c === 'live-indicator' || c === 'live-badge'));
+      });
+      
+      if (liveIndicators.length > 0) {
+        console.log('[Whatnot Scraper] LIVE indicator found - stream is active');
+        return false;
+      }
+      
+      // STEP 2: Look for specific data-testid="show-has-ended-banner" element first
+      const endedBanner = document.querySelector('[data-testid="show-has-ended-banner"]');
+      if (endedBanner && isElementVisible(endedBanner)) {
+        console.log('[Whatnot Scraper] STREAM END DETECTED: Found visible "show-has-ended-banner" element');
+        return true;
+      }
+      
+      // STEP 3: Fallback to text search for visible elements with exact match
+      const endedElement = allElements.find(el => {
+        // Must be visible
+        if (!isElementVisible(el)) return false;
+        
+        const text = el.textContent || '';
+        
+        // Exact match for "Show Has Ended" (case-insensitive)
+        return text.trim() === 'Show Has Ended' || 
+               text.trim() === 'Show has ended' ||
+               text.trim() === 'Stream has ended' ||
+               // Also check for close variations in text content
+               (text.includes('Show Has Ended') && text.length < 100) || // Short text to avoid false matches
+               (text.includes('Show has ended') && text.length < 100) ||
+               (text.includes('Stream has ended') && text.length < 100);
       });
       
       if (endedElement) {
-        console.log('[Whatnot Scraper] STREAM END DETECTED: Found "Show Has Ended" banner');
+        console.log('[Whatnot Scraper] STREAM END DETECTED: Found visible "Show Has Ended" banner');
         return true;
       }
       
