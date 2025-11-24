@@ -10,7 +10,7 @@
   console.log('[Whatnot Scraper] Content script initialized');
 
   const DEFAULT_SCRAPE_INTERVAL_MS = 120000; // 2 minutes (120 seconds)
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwonHuSGAmWps2FlO7EhMWxoGoAq4006EI40cFiyaDlOyDGJOSWmCycz-Bs5yvwn9eX/exec';
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyUaeXfVoyYDhex9Fy9x1Su9AqKJgwR35k2F676uH268h53cDv6C8FaDLWANVFTYk0/exec'; // Production Bot Collector
   const ENABLE_DATA_TRANSMISSION = true; // Feature flag to enable/disable data transmission
   const MAX_RETRY_ATTEMPTS = 3;
   const RETRY_DELAYS = [1000, 2000, 4000]; // Exponential backoff delays in ms
