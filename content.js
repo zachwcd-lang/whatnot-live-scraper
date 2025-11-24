@@ -818,6 +818,9 @@
       
       // Prepare final data object
       // Use lastActivityTime as timestamp if available (more accurate than current time)
+      // Ensure hoursStreamed is always a number (0 if null/undefined)
+      const finalHoursStreamed = (showTimeHours !== null && showTimeHours !== undefined) ? Number(showTimeHours) : 0;
+      
       const finalData = {
         timestamp: lastActivityTime || currentTimestamp, // Use activity time if available
         streamId: streamId,
@@ -828,8 +831,11 @@
         lastActivityTime: lastActivityTime, // Include separately for backend reference
         streamEnded: true, // Mark as final
         streamerName: "Unknown", // Default value, can be extracted later if needed
-        hoursStreamed: showTimeHours // Show Time counter in hours
+        hoursStreamed: finalHoursStreamed // Show Time counter in hours (always a number)
       };
+      
+      // Log hoursStreamed value being sent
+      console.log('[Whatnot Scraper] Final hoursStreamed value in payload:', finalHoursStreamed, 'type:', typeof finalHoursStreamed);
       
       console.log('[Whatnot Scraper] FINAL scraped data:', finalData);
       
@@ -915,6 +921,9 @@
 
     // Prepare data object
     const timestamp = new Date().toISOString();
+    // Ensure hoursStreamed is always a number (0 if null/undefined)
+    const hoursStreamedValue = (showTimeHours !== null && showTimeHours !== undefined) ? Number(showTimeHours) : 0;
+    
     const data = {
       timestamp: timestamp,
       streamId: streamId,
@@ -925,8 +934,11 @@
       lastActivityTime: null, // Not available for live streams
       streamEnded: false,
       streamerName: "Unknown", // Default value, can be extracted later if needed
-      hoursStreamed: showTimeHours // Show Time counter in hours
+      hoursStreamed: hoursStreamedValue // Show Time counter in hours (always a number)
     };
+    
+    // Log hoursStreamed value being sent
+    console.log('[Whatnot Scraper] hoursStreamed value in payload:', hoursStreamedValue, 'type:', typeof hoursStreamedValue);
 
     // Log start message and URL extraction details on first successful scrape
     if (!hasLoggedStartMessage && (grossSales !== null || estimatedOrders !== null)) {
