@@ -1145,6 +1145,39 @@
     console.error('[Whatnot Scraper] Error setting up MutationObserver:', error);
   }
 
+  // Listen for messages from popup/background to scrape on demand
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'scrape-now') {
+      console.log('[Whatnot Scraper] Received scrape-now request');
+      
+      // Perform immediate scrape
+      scrapeData().then(data => {
+        if (data) {
+          console.log('[Whatnot Scraper] Scrape completed:', data);
+          sendResponse({ success: true, data: data });
+        } else {
+          sendResponse({ success: false, error: 'Failed to scrape data' });
+        }
+      }).catch(error => {
+        console.error('[Whatnot Scraper] Error during scrape-now:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+      
+      // Return true to indicate we'll send response asynchronously
+      return true;
+    }
+    
+    if (message.type === 'get-scraped-data') {
+      // Return last scraped data if available
+      // This is a simple implementation - you could store last scraped data in a variable
+      scrapeData().then(data => {
+        sendResponse({ success: true, data: data });
+      }).catch(error => {
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+  });
 
 })();
 

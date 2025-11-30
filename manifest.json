@@ -5,7 +5,10 @@
   "description": "Scrapes live sales data from Whatnot streaming platform",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "tabs",
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
     "*://whatnot.com/*"
@@ -21,6 +24,15 @@
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*"
+      ],
+      "js": ["helper-content.js"],
+      "run_at": "document_start",
+      "all_frames": false
     }
   ],
   "action": {
@@ -29,6 +41,12 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "externally_connectable": {
+    "matches": [
+      "http://localhost:*/*",
+      "http://127.0.0.1:*/*"
+    ]
   }
 }
 
