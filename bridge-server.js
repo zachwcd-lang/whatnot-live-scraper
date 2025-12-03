@@ -19,6 +19,8 @@ async function extractCookiesFromChrome() {
   try {
     // Connect to Chrome via CDP
     client = await CDP({ port: CHROME_DEBUG_PORT });
+    const { Network } = client;
+    
     await Network.enable();
     
     // Get cookies for whatnot.com
