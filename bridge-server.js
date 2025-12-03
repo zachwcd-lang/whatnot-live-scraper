@@ -19,9 +19,6 @@ async function extractCookiesFromChrome() {
   try {
     // Connect to Chrome via CDP
     client = await CDP({ port: CHROME_DEBUG_PORT });
-    const { Network, Page, Runtime } = client;
-    
-    await Page.enable();
     await Network.enable();
     
     // Get cookies for whatnot.com
@@ -56,6 +53,63 @@ async function extractCookiesFromChrome() {
     if (client) await client.close();
     console.error('[Bridge] Error extracting cookies:', error.message);
     throw new Error(`Failed to extract cookies. Make sure Chrome is running with remote debugging: chrome --remote-debugging-port=${CHROME_DEBUG_PORT}`);
+  }
+}
+
+/**
+ * Navigate Chrome to a specific URL using CDP
+ */
+async function navigateToUrl(url) {
+  let client;
+  try {
+    // Connect to Chrome via CDP
+    client = await CDP({ port: CHROME_DEBUG_PORT });
+    const { Page } = client;
+    
+    await Page.enable();
+    
+    // Get the first tab or create a new one
+    const targets = await CDP.List({ port: CHROME_DEBUG_PORT });
+    let targetId = null;
+    
+    // Find a page target (not a service worker or extension)
+    for (const target of targets) {
+      if (target.type === 'page') {
+        targetId = target.id;
+        break;
+      }
+    }
+    
+    if (!targetId) {
+      throw new Error('No Chrome tab found to navigate');
+    }
+    
+    // Close the current client and connect to the specific tab
+    await client.close();
+    client = await CDP({ port: CHROME_DEBUG_PORT, target: targetId });
+    const { Page: TabPage } = client;
+    
+    await TabPage.enable();
+    
+    // Navigate to the URL
+    console.log(`[Bridge] Navigating Chrome to: ${url}`);
+    await TabPage.navigate({ url });
+    
+    // Wait for the page to load
+    await new Promise(resolve => {
+      TabPage.loadEventFired(() => {
+        console.log('[Bridge] Page loaded successfully');
+        resolve();
+      });
+    });
+    
+    await client.close();
+    
+    return { success: true, url };
+  } catch (error) {
+    if (client) await client.close();
+    console.error('[Bridge] Error navigating to URL:', error.message);
+    throw new Error(`Failed to navigate Chrome: ${error.message}`);
   }
 }
 
@@ -103,12 +157,12 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         
-        // For scraping, we'll return instructions
-        // In production, you'd want to use Chrome Extension messaging
+        // Navigate Chrome to the URL so the extension can scrape it
+        const result = await navigateToUrl(url);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
           success: true, 
-          message: 'Use Chrome Extension to scrape URL',
+          message: 'Chrome navigated to URL. Extension can now scrape the page.',
           url: url
         }));
       } else {
@@ -131,11 +185,14 @@ server.listen(PORT, () => {
   console.log(`\nAvailable endpoints:`);
   console.log(`  POST /`);
   console.log(`    Action: "get-auth-headers" - Extract cookies/headers from browser`);
-  console.log(`    Action: "scrape-url" - Send URL to extension (requires extension messaging)`);
+  console.log(`    Action: "scrape-url" - Navigate Chrome to URL for extension scraping`);
   console.log(`\nExample:`);
   console.log(`  curl -X POST http://localhost:${PORT} \\`);
   console.log(`    -H "Content-Type: application/json" \\`);
   console.log(`    -d '{"action": "get-auth-headers"}'`);
+  console.log(`\n  curl -X POST http://localhost:${PORT} \\`);
+  console.log(`    -H "Content-Type: application/json" \\`);
+  console.log(`    -d '{"action": "scrape-url", "url": "https://www.whatnot.com/dashboard/live/..."}'`);
 });
 
 module.exports = { server };
