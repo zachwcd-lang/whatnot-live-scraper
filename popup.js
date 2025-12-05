@@ -78,7 +78,145 @@ document.addEventListener('DOMContentLoaded', async () => {
   } catch (error) {
     console.error('Error checking tab:', error);
   }
+
+  // Setup URL scraping functionality
+  setupUrlScraping();
 });
+
+/**
+ * Setup URL scraping functionality
+ */
+async function setupUrlScraping() {
+  const urlInput = document.getElementById('url-input');
+  const scrapeButton = document.getElementById('scrape-url');
+  const urlStatus = document.getElementById('url-status');
+
+  if (!urlInput || !scrapeButton || !urlStatus) {
+    return;
+  }
+
+  // Validate Whatnot URL
+  function isValidWhatnotUrl(url) {
+    if (!url) return false;
+    const whatnotPattern = /^https?:\/\/(www\.)?whatnot\.com\/(dashboard\/)?live\/[\w-]+/i;
+    return whatnotPattern.test(url.trim());
+  }
+
+  // Show status message
+  function showStatus(message, isError = false) {
+    urlStatus.style.display = 'block';
+    urlStatus.style.backgroundColor = isError ? '#ffebee' : '#e8f5e9';
+    urlStatus.style.color = isError ? '#c62828' : '#2e7d32';
+    urlStatus.textContent = message;
+    
+    if (!isError) {
+      setTimeout(() => {
+        urlStatus.style.display = 'none';
+      }, 5000);
+    }
+  }
+
+  scrapeButton.addEventListener('click', async () => {
+    const url = urlInput.value.trim();
+    
+    if (!url) {
+      showStatus('❌ Please enter a URL', true);
+      return;
+    }
+
+    if (!isValidWhatnotUrl(url)) {
+      showStatus('❌ Invalid Whatnot URL. Must be a live dashboard URL.', true);
+      return;
+    }
+
+    try {
+      showStatus('⏳ Opening URL and scraping...', false);
+      scrapeButton.disabled = true;
+
+      // Normalize URL to dashboard format if needed
+      let targetUrl = url;
+      if (url.includes('/live/') && !url.includes('/dashboard/live/')) {
+        const streamIdMatch = url.match(/\/live\/([\w-]+)/);
+        if (streamIdMatch) {
+          targetUrl = `https://www.whatnot.com/dashboard/live/${streamIdMatch[1]}`;
+        }
+      }
+
+      // Open the URL in a new tab or use existing
+      let tab;
+      const existingTabs = await chrome.tabs.query({ url: targetUrl });
+      
+      if (existingTabs.length > 0) {
+        // Use existing tab
+        tab = existingTabs[0];
+        await chrome.tabs.update(tab.id, { active: true });
+        await chrome.tabs.reload(tab.id);
+      } else {
+        // Create new tab
+        tab = await chrome.tabs.create({ url: targetUrl, active: true });
+      }
+
+      // Wait for tab to load
+      await waitForTabLoad(tab.id);
+
+      // Wait a bit more for content script to initialize
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Send message to content script to scrape once
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          type: 'scrape-now',
+          url: targetUrl
+        });
+
+        if (response && response.success) {
+          showStatus(`✅ Scraping started on: ${targetUrl.substring(0, 50)}...`);
+          // Show data in console log
+          if (response.data) {
+            console.log('[Whatnot Scraper] Scraped data:', response.data);
+          }
+        } else {
+          showStatus('⚠️ Content script may still be loading. Check console for data.', false);
+        }
+      } catch (msgError) {
+        // Content script might not be ready yet, but it will auto-start
+        showStatus('✅ Tab opened. Scraping will start automatically (check console).', false);
+      }
+
+      // Close popup after a delay
+      setTimeout(() => {
+        window.close();
+      }, 2000);
+
+    } catch (error) {
+      console.error('Error scraping URL:', error);
+      showStatus(`❌ Error: ${error.message}`, true);
+    } finally {
+      scrapeButton.disabled = false;
+    }
+  });
+}
+
+/**
+ * Wait for tab to finish loading
+ */
+function waitForTabLoad(tabId) {
+  return new Promise((resolve) => {
+    const listener = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    
+    // Timeout after 30 seconds
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(); // Resolve anyway to not hang
+    }, 30000);
+  });
+}
 
 /**
  * Load current scrape interval from storage and display it

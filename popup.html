@@ -26,6 +26,15 @@
       </div>
       <p class="setting-note">Current interval: <span id="current-interval">60</span> seconds</p>
     </div>
+    <div class="url-scrape">
+      <h2>Scrape from URL</h2>
+      <div class="setting-item">
+        <label for="url-input">Whatnot Dashboard URL:</label>
+        <input type="text" id="url-input" placeholder="https://www.whatnot.com/dashboard/live/..." />
+        <button id="scrape-url">Scrape This URL</button>
+      </div>
+      <div id="url-status" style="margin-top: 10px; padding: 8px; display: none; border-radius: 4px; font-size: 12px;"></div>
+    </div>
   </div>
   <script src="popup.js"></script>
 </body>

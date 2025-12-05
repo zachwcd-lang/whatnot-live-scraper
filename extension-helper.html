@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Extension Bridge Helper</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    #status {
+      padding: 15px;
+      background: #e3f2fd;
+      border-radius: 4px;
+      margin: 20px 0;
+      font-weight: bold;
+    }
+    #status.active {
+      background: #c8e6c9;
+    }
+    #status.error {
+      background: #ffcdd2;
+    }
+    .input-group {
+      margin: 20px 0;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 20px;
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1976D2;
+    }
+    #results {
+      margin-top: 20px;
+      padding: 15px;
+      background: #f5f5f5;
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .log-entry {
+      margin: 5px 0;
+      padding: 5px;
+      border-left: 3px solid #2196F3;
+      padding-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔗 Extension Bridge Helper</h1>
+    <p>This page bridges HTTP requests to your Chrome Extension.</p>
+    <p><strong>Keep this tab open</strong> - it needs to stay active to relay messages.</p>
+    
+    <div class="input-group">
+      <label for="extensionId">Chrome Extension ID:</label>
+      <input type="text" id="extensionId" placeholder="Enter extension ID from chrome://extensions/">
+      <button onclick="saveExtensionId()">Save</button>
+    </div>
+    
+    <div id="status">⏳ Waiting for Extension ID...</div>
+    <div id="results"></div>
+  </div>
+  
+  <script>
+    const bridgeUrl = 'http://localhost:3001';
+    let extensionId = localStorage.getItem('extensionId');
+    let isActive = false;
+    
+    // Load saved extension ID
+    if (extensionId) {
+      document.getElementById('extensionId').value = extensionId;
+      checkExtension();
+    }
+    
+    function saveExtensionId() {
+      extensionId = document.getElementById('extensionId').value.trim();
+      if (extensionId) {
+        localStorage.setItem('extensionId', extensionId);
+        updateStatus('✅ Extension ID saved. Checking connection...', '');
+        checkExtension();
+      }
+    }
+    
+    function updateStatus(message, className) {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = message;
+      statusEl.className = className;
+    }
+    
+    function addLog(message) {
+      const resultsEl = document.getElementById('results');
+      const logEntry = document.createElement('div');
+      logEntry.className = 'log-entry';
+      logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      resultsEl.appendChild(logEntry);
+      resultsEl.scrollTop = resultsEl.scrollHeight;
+    }
+    
+    async function checkExtension() {
+      if (!extensionId) {
+        updateStatus('⚠️ Please enter Extension ID', 'error');
+        return;
+      }
+      
+      // Check if content script is loaded (it should be since we match localhost)
+      updateStatus('✅ Bridge active - content script should be loaded', 'active');
+      isActive = true;
+      startPolling();
+      
+      // Test connection by sending a ping
+      window.postMessage({
+        type: 'extension-bridge-request',
+        action: 'ping',
+        requestId: 'ping_' + Date.now()
+      }, '*');
+    }
+    
+    // Listen for messages from content script (which gets them from extension)
+    window.addEventListener('message', (event) => {
+      // Only accept messages from same origin
+      if (event.origin !== window.location.origin) return;
+      
+      if (event.data.type === 'extension-bridge-response') {
+        const requestId = event.data.requestId;
+        const data = event.data.data;
+        
+        addLog(`✅ Received response for request ${requestId}`);
+        console.log('Response data:', data);
+        
+        // Send response back to bridge server
+        fetch(`${bridgeUrl}/response/${requestId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        })
+        .then(res => {
+          addLog(`✅ Response forwarded to bridge server (status: ${res.status})`);
+          return res.json();
+        })
+        .then(result => {
+          console.log('Bridge server response:', result);
+        })
+        .catch(err => {
+          addLog(`❌ Error forwarding response: ${err.message}`);
+          console.error('Error:', err);
+        });
+      }
+    });
+    
+    // Poll bridge server for requests
+    async function startPolling() {
+      if (!isActive) return;
+      
+      try {
+        const response = await fetch(`${bridgeUrl}/poll`);
+        const data = await response.json();
+        
+        if (data.requestId && data.action) {
+          addLog(`Received request: ${data.action} (ID: ${data.requestId})`);
+          
+          // Forward to extension via content script
+          window.postMessage({
+            type: 'extension-bridge-request',
+            action: data.action,
+            requestId: data.requestId,
+            url: data.url
+          }, '*');
+          
+          addLog(`Request forwarded to extension (ID: ${data.requestId})`);
+        }
+      } catch (error) {
+        // Connection error - bridge server might be down
+        if (error.message.includes('Failed to fetch')) {
+          addLog('Bridge server connection error (will retry)');
+        }
+      }
+      
+      // Continue polling
+      setTimeout(startPolling, 500);
+    }
+    
+    // Auto-check every 5 seconds if not connected
+    setInterval(() => {
+      if (!isActive && extensionId) {
+        checkExtension();
+      }
+    }, 5000);
+  </script>
+</body>
+</html>
+
