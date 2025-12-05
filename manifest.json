@@ -11,7 +11,8 @@
     "webRequest"
   ],
   "host_permissions": [
-    "*://whatnot.com/*"
+    "*://whatnot.com/*",
+    "https://vvgjyvkjptgydqqwzked.supabase.co/*"
   ],
   "content_scripts": [
     {
