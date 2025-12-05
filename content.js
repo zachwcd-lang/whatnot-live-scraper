@@ -10,7 +10,8 @@
   console.log('[Whatnot Scraper] Content script initialized');
 
   const DEFAULT_SCRAPE_INTERVAL_MS = 120000; // 2 minutes (120 seconds)
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyUaeXfVoyYDhex9Fy9x1Su9AqKJgwR35k2F676uH268h53cDv6C8FaDLWANVFTYk0/exec'; // Production Bot Collector
+  const SUPABASE_URL = 'https://vvgjyvkjptgydqqwzked.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2Z2p5dmtqcHRneWRxcXd6a2VkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ2NTczMjYsImV4cCI6MjA4MDIzMzMyNn0.VRV0ALCml7uKU2VkbvXngUbIalCRfNCjDz5R3hMmTBU';
   const ENABLE_DATA_TRANSMISSION = true; // Feature flag to enable/disable data transmission
   const MAX_RETRY_ATTEMPTS = 3;
   const RETRY_DELAYS = [1000, 2000, 4000]; // Exponential backoff delays in ms
@@ -987,7 +988,89 @@
   }
 
   /**
-   * Send scraped data to Google Apps Script endpoint with retry logic
+   * Match stream URL to scheduled_streams table to get scheduled_stream_id
+   * @param {string} streamUrl - The stream URL to match
+   * @returns {Promise<string|null>} - The scheduled_stream_id or null if not found
+   */
+  async function matchScheduledStream(streamUrl) {
+    try {
+      const matchUrl = `${SUPABASE_URL}/rest/v1/scheduled_streams?stream_url=eq.${encodeURIComponent(streamUrl)}&select=id`;
+      
+      const matchResponse = await fetch(matchUrl, {
+        headers: {
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!matchResponse.ok) {
+        console.warn('[Whatnot Scraper] Failed to query scheduled_streams:', matchResponse.status, matchResponse.statusText);
+        return null;
+      }
+
+      const matches = await matchResponse.json();
+      
+      if (matches && matches.length > 0) {
+        console.log('[Whatnot Scraper] Found matching scheduled stream:', matches[0].id);
+        return matches[0].id;
+      }
+      
+      console.log('[Whatnot Scraper] No matching scheduled stream found for URL:', streamUrl);
+      return null;
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error matching scheduled stream:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Convert scheduled start time string to ISO timestamp
+   * Format: "MM/DD HH:MMAM/PM" -> ISO timestamp
+   * @param {string} scheduledTimeStr - Scheduled time string like "11/23 10:00AM"
+   * @returns {string|null} - ISO timestamp or null if parsing fails
+   */
+  function parseScheduledTime(scheduledTimeStr) {
+    if (!scheduledTimeStr) return null;
+    
+    try {
+      // Parse format: "MM/DD HH:MMAM/PM" or "M/D HH:MMAM/PM"
+      const match = scheduledTimeStr.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+      if (!match) return null;
+      
+      let month = parseInt(match[1], 10) - 1; // JS months are 0-indexed
+      const day = parseInt(match[2], 10);
+      let hours = parseInt(match[3], 10);
+      const minutes = parseInt(match[4], 10);
+      const ampm = match[5].toUpperCase();
+      
+      // Convert to 24-hour format
+      if (ampm === 'PM' && hours !== 12) {
+        hours += 12;
+      } else if (ampm === 'AM' && hours === 12) {
+        hours = 0;
+      }
+      
+      // Use current year (or you could extract from context)
+      const now = new Date();
+      const year = now.getFullYear();
+      
+      // Create date in local timezone, then convert to ISO
+      const date = new Date(year, month, day, hours, minutes);
+      
+      if (isNaN(date.getTime())) {
+        return null;
+      }
+      
+      return date.toISOString();
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error parsing scheduled time:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Send scraped data to Supabase with retry logic
    * @param {Object} data - The scraped data object to send
    * @returns {Promise<boolean>} - True if successful, false otherwise
    */
@@ -1031,20 +1114,45 @@
     // Retry logic with exponential backoff
     for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
       try {
-        // Log the exact payload being sent to backend
-        console.log('[Whatnot Scraper] Sending payload:', JSON.stringify(data, null, 2));
+        // First, try to match the stream URL to scheduled_streams
+        const scheduledStreamId = await matchScheduledStream(data.streamUrl);
         
-        const response = await fetch(APPS_SCRIPT_URL, {
+        // Parse scheduled start time to ISO format
+        const scheduledStartTimeISO = parseScheduledTime(data.scheduledStartTime);
+        
+        // Prepare payload for stream_scrapes table
+        const payload = {
+          whatnot_stream_id: data.streamId,
+          stream_url: data.streamUrl,
+          units_sold: data.estimatedOrders !== null ? Math.round(data.estimatedOrders) : null,
+          gross_sales: data.grossSales !== null ? parseFloat(data.grossSales) : null,
+          runtime_hours: data.hoursStreamed !== null && data.hoursStreamed !== undefined ? parseFloat(data.hoursStreamed) : null,
+          scheduled_start_time: scheduledStartTimeISO,
+          scheduled_stream_id: scheduledStreamId,
+          streamer_username: data.streamerName || null,
+          scraped_at: new Date().toISOString()
+        };
+
+        // Log the exact payload being sent to backend
+        console.log('[Whatnot Scraper] Sending payload to Supabase:', JSON.stringify(payload, null, 2));
+        
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/stream_scrapes`, {
           method: 'POST',
-          mode: 'no-cors', // Required for Apps Script CORS handling
           headers: {
-            'Content-Type': 'application/json'
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
           },
-          body: JSON.stringify(data)
+          body: JSON.stringify(payload)
         });
 
-        // With no-cors mode, we can't read the response, but if no error is thrown, assume success
-        console.log(`[Whatnot Scraper] Data sent successfully (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS}):`, data.streamId);
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+
+        console.log(`[Whatnot Scraper] Data sent successfully to Supabase (attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS}):`, data.streamId);
         return true;
       } catch (error) {
         lastError = error;
