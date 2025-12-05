@@ -1,4 +1,14 @@
 {
+  "name": "whatnot-live-scraper",
+  "version": "1.0.0",
+  "description": "Automated Whatnot live stream monitor and scraper",
+  "main": "api-client.js",
+  "scripts": {
+    "bridge": "node bridge-server.js",
+    "monitor": "node monitor.js",
+    "api": "node api-client.js",
+    "test": "node api-client.js"
+  },
   "dependencies": {
     "axios": "^1.13.2",
     "chrome-remote-interface": "^0.33.3"
