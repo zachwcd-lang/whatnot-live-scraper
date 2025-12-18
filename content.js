@@ -21,6 +21,9 @@
   let hasLoggedStartMessage = false;
   let currentScrapeInterval = DEFAULT_SCRAPE_INTERVAL_MS;
   let finalDataSent = false; // Track if final data has been sent after stream end
+  let lastGrossSales = null;
+  let lastEstimatedOrders = null;
+  let staleCount = 0;
 
   /**
    * Extract stream ID from any Whatnot URL format
@@ -253,6 +256,55 @@
       }
     } catch (error) {
       console.error('[Whatnot Scraper] Error in fallback Estimated Orders extraction:', error);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Extract Tips value from the page
+   * Uses same pattern as Gross Sales and Estimated Orders extraction
+   * @returns {number|null} - Tips amount or null if not found
+   */
+  function extractTips() {
+    // Strategy 1: Find label and traverse DOM
+    const labelElement = findElementByText('Tips');
+    if (labelElement) {
+      const valueElement = findValueElement(labelElement);
+      if (valueElement) {
+        const valueText = valueElement.textContent || '';
+        const parsed = parseDollarAmount(valueText);
+        if (parsed !== null) return parsed;
+      }
+      
+      // Try parent container text
+      const parentText = labelElement.parentElement?.textContent || '';
+      const parsed = parseDollarAmount(parentText);
+      if (parsed !== null) return parsed;
+      
+      // Try grandparent container text
+      const grandparentText = labelElement.parentElement?.parentElement?.textContent || '';
+      const parsed2 = parseDollarAmount(grandparentText);
+      if (parsed2 !== null) return parsed2;
+    }
+    
+    // Strategy 2: Search entire page for "Tips" followed by dollar amount
+    try {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const text = el.textContent || '';
+        if (text.includes('Tips')) {
+          // Look for dollar amount in this element or nearby
+          const dollarMatch = text.match(/Tips[:\s]*\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/i);
+          if (dollarMatch) {
+            const cleaned = dollarMatch[1].replace(/,/g, '');
+            const parsed = parseFloat(cleaned);
+            if (!isNaN(parsed)) return parsed;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[Whatnot Scraper] Error in fallback Tips extraction:', error);
     }
     
     return null;
@@ -778,6 +830,7 @@
       let estimatedOrders = extractEstimatedOrders();
       let scheduledStartTime = extractScheduledTime();
       let showTimeHours = extractShowTime();
+      let tips = extractTips();
       
       // Extract last activity timestamp (actual stream end time)
       console.log('[Whatnot Scraper] Extracting last activity timestamp from Activity feed...');
@@ -791,6 +844,7 @@
         estimatedOrders = estimatedOrders || extractEstimatedOrders();
         scheduledStartTime = scheduledStartTime || extractScheduledTime();
         showTimeHours = showTimeHours || extractShowTime();
+        tips = tips || extractTips();
       }
       
       // Extract stream ID and normalize URL
@@ -828,6 +882,7 @@
         streamUrl: normalizedUrl,
         grossSales: grossSales,
         estimatedOrders: estimatedOrders,
+        tips: tips || 0,
         scheduledStartTime: scheduledStartTime,
         lastActivityTime: lastActivityTime, // Include separately for backend reference
         streamEnded: true, // Mark as final
@@ -874,6 +929,30 @@
     const grossSales = extractGrossSales();
     const estimatedOrders = extractEstimatedOrders();
     const showTimeHours = extractShowTime();
+    const tips = extractTips();
+    
+    // Stale data detection - if values unchanged for 5 scrapes, assume stream ended
+    if (grossSales !== null && estimatedOrders !== null) {
+      if (grossSales === lastGrossSales && estimatedOrders === lastEstimatedOrders && grossSales > 0) {
+        staleCount++;
+        if (staleCount >= 5) {
+          console.log('[Whatnot Scraper] Data stale for 5 consecutive scrapes (sales and orders unchanged), assuming stream ended');
+          // Stop monitoring interval
+          if (monitoringInterval) {
+            clearInterval(monitoringInterval);
+            monitoringInterval = null;
+          }
+          // Mark as ended - will be set in data object below
+          finalDataSent = true;
+        }
+      } else {
+        staleCount = 0; // Reset counter when data changes
+      }
+    }
+    
+    // Update last values for next scrape
+    lastGrossSales = grossSales;
+    lastEstimatedOrders = estimatedOrders;
 
     // Check if both values were found
     if (grossSales === null && estimatedOrders === null) {
@@ -931,9 +1010,10 @@
       streamUrl: normalizedUrl,
       grossSales: grossSales,
       estimatedOrders: estimatedOrders,
+      tips: tips || 0,
       scheduledStartTime: scheduledStartTime,
       lastActivityTime: null, // Not available for live streams
-      streamEnded: false,
+      streamEnded: finalDataSent, // Will be true if stale detected
       streamerName: "Unknown", // Default value, can be extracted later if needed
       hoursStreamed: hoursStreamedValue // Show Time counter in hours (always a number)
     };
@@ -1114,6 +1194,13 @@
     // Retry logic with exponential backoff
     for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
       try {
+        // Before each retry, verify still on same stream
+        const currentStreamId = getStreamId(window.location.href);
+        if (!currentStreamId || currentStreamId !== data.streamId) {
+          console.log(`[Whatnot Scraper] Stream changed during retry (was ${data.streamId}, now ${currentStreamId || 'none'}), cancelling`);
+          return false;
+        }
+        
         // First, try to match the stream URL to scheduled_streams
         const scheduledStreamId = await matchScheduledStream(data.streamUrl);
         
@@ -1130,7 +1217,9 @@
           scheduled_start_time: scheduledStartTimeISO,
           scheduled_stream_id: scheduledStreamId,
           streamer_username: data.streamerName || null,
-          scraped_at: new Date().toISOString()
+          scraped_at: new Date().toISOString(),
+          tips: data.tips || 0,
+          stream_status: data.streamEnded ? 'ended' : 'live'
         };
 
         // Log the exact payload being sent to backend
@@ -1179,6 +1268,11 @@
     try {
       // Reset final data sent flag when starting monitoring
       finalDataSent = false;
+      
+      // Reset stale data tracking when starting new stream
+      staleCount = 0;
+      lastGrossSales = null;
+      lastEstimatedOrders = null;
       
       // Load scrape interval from storage
       currentScrapeInterval = await loadScrapeInterval();

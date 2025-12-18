@@ -204,6 +204,22 @@ async function checkForNewStreams() {
     // Get current live streams
     const currentLives = await getCurrentLives(authHeaders);
     
+    // Clean up ended streams - remove from tracking if no longer active
+    const activeLiveIds = new Set(currentLives.map(s => s.id));
+    const removedCount = Array.from(processedStreams).filter(id => !activeLiveIds.has(id)).length;
+    
+    for (const streamId of Array.from(processedStreams)) {
+      if (!activeLiveIds.has(streamId)) {
+        console.log(`🛑 Stream ended, removing from tracking: ${streamId}`);
+        processedStreams.delete(streamId);
+      }
+    }
+    
+    if (removedCount > 0) {
+      console.log(`🧹 Cleaned up ${removedCount} ended stream(s)`);
+    }
+    console.log(`📊 Active streams: ${activeLiveIds.size}, Tracked: ${processedStreams.size}`);
+    
     if (currentLives.length === 0) {
       // No streams currently, but don't log spam
       return 0;
