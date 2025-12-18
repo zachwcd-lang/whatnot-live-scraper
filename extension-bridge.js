@@ -217,16 +217,22 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`🌐 Extension Bridge Server running on http://localhost:${PORT}`);
-  console.log(`\n📋 SETUP INSTRUCTIONS:`);
+  console.log('\n================================================================');
+  console.log(`[BRIDGE] Extension Bridge Server running on http://localhost:${PORT}`);
+  console.log('================================================================');
+  console.log(`[SETUP] SETUP INSTRUCTIONS:`);
+  console.log('----------------------------------------------------------------');
   console.log(`   1. Open http://localhost:${PORT}/helper in Chrome`);
   console.log(`   2. Enter your Chrome Extension ID when prompted`);
   console.log(`   3. Keep that tab open - it bridges requests to the extension`);
-  console.log(`\n📡 API Endpoint: POST http://localhost:${PORT}/api`);
-  console.log(`\nExample:`);
+  console.log('----------------------------------------------------------------');
+  console.log(`[API] API Endpoint: POST http://localhost:${PORT}/api`);
+  console.log('----------------------------------------------------------------');
+  console.log(`[EXAMPLE] Example:`);
   console.log(`   curl -X POST http://localhost:${PORT}/api \\`);
   console.log(`     -H "Content-Type: application/json" \\`);
   console.log(`     -d '{"action": "get-auth-headers"}'`);
+  console.log('================================================================\n');
 });
 
 module.exports = { server };

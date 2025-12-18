@@ -32,7 +32,7 @@ async function getAuthHeaders() {
     });
     return response.data.headers;
   } catch (error) {
-    console.error('❌ Error getting auth headers:', error.message);
+    console.error('[ERROR] Error getting auth headers:', error.message);
     throw error;
   }
 }
@@ -42,7 +42,8 @@ async function getAuthHeaders() {
  * This triggers the browser to use the refresh token and get new cookies
  */
 async function refreshChromeAuth() {
-  console.log('\n🔄 Refreshing Chrome to renew authentication...');
+  console.log('\n[REFRESH] Refreshing Chrome to renew authentication...');
+  console.log('----------------------------------------------------------------');
   try {
     // Navigate to Whatnot dashboard to trigger auth refresh
     await axios.post(BRIDGE_URL, {
@@ -54,11 +55,13 @@ async function refreshChromeAuth() {
     console.log('   Waiting for page to load and cookies to update...');
     await new Promise(resolve => setTimeout(resolve, 5000));
     
-    console.log('✅ Chrome refreshed. Authentication should be renewed.');
+    console.log('[SUCCESS] Chrome refreshed. Authentication should be renewed.');
+    console.log('----------------------------------------------------------------');
     consecutiveAuthFailures = 0;
     return true;
   } catch (error) {
-    console.error('❌ Failed to refresh Chrome:', error.message);
+    console.error('[ERROR] Failed to refresh Chrome:', error.message);
+    console.error('----------------------------------------------------------------');
     return false;
   }
 }
@@ -115,22 +118,25 @@ async function getCurrentLives(authHeaders) {
     // Check if it's an authentication error
     if (error.response && (error.response.status === 401 || error.response.status === 403)) {
       consecutiveAuthFailures++;
-      console.error(`\n❌ Authentication error (${error.response.status})`);
+      console.error(`\n[ERROR] Authentication error (${error.response.status})`);
       console.error(`   Failure count: ${consecutiveAuthFailures}/${MAX_AUTH_FAILURES}`);
+      console.error('----------------------------------------------------------------');
       
       if (consecutiveAuthFailures >= MAX_AUTH_FAILURES) {
-        console.log(`\n⚠️  ${MAX_AUTH_FAILURES} consecutive auth failures detected. Attempting to refresh...`);
+        console.log(`\n[WARNING] ${MAX_AUTH_FAILURES} consecutive auth failures detected. Attempting to refresh...`);
+        console.log('----------------------------------------------------------------');
         const refreshed = await refreshChromeAuth();
         
         if (refreshed) {
           console.log('   Will retry on next check cycle.');
         } else {
-          console.log('   ⚠️  Refresh failed. May need manual intervention.');
+          console.log('   [WARNING] Refresh failed. May need manual intervention.');
         }
       }
     } else {
       // Some other error
-      console.error('❌ Error calling GraphQL API:', error.message);
+      console.error('[ERROR] Error calling GraphQL API:', error.message);
+      console.error('----------------------------------------------------------------');
       if (error.response) {
         console.error('   Response status:', error.response.status);
         console.error('   Response data:', JSON.stringify(error.response.data, null, 2));
@@ -151,7 +157,8 @@ async function navigateToStream(url) {
     });
     return response.data;
   } catch (error) {
-    console.error('❌ Error navigating to stream:', error.message);
+    console.error('[ERROR] Error navigating to stream:', error.message);
+    console.error('----------------------------------------------------------------');
     throw error;
   }
 }
@@ -169,23 +176,29 @@ async function processNewStreams(streams) {
       
       const streamUrl = `https://www.whatnot.com/dashboard/live/${stream.id}`;
       
-      console.log(`\n🆕 New stream detected!`);
+      console.log(`\n================================================================`);
+      console.log(`[NEW] New stream detected!`);
+      console.log(`----------------------------------------------------------------`);
       console.log(`   Title: ${stream.title || 'Untitled'}`);
       console.log(`   ID: ${stream.id}`);
       console.log(`   Status: ${stream.status}`);
       console.log(`   Started: ${new Date(parseInt(stream.startTime)).toLocaleString()}`);
-      console.log(`\n🔗 Navigating Chrome to: ${streamUrl}`);
+      console.log(`----------------------------------------------------------------`);
+      console.log(`[NAVIGATE] Navigating Chrome to: ${streamUrl}`);
+      console.log(`================================================================`);
       
       try {
         await navigateToStream(streamUrl);
-        console.log('✅ Chrome navigated successfully. Extension can now scrape.');
+        console.log('[SUCCESS] Chrome navigated successfully. Extension can now scrape.');
+        console.log('----------------------------------------------------------------');
         
         // Wait a bit before processing next stream
         if (newStreamsFound < streams.length) {
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       } catch (error) {
-        console.error('❌ Failed to navigate to stream:', error.message);
+        console.error('[ERROR] Failed to navigate to stream:', error.message);
+        console.error('----------------------------------------------------------------');
       }
     }
   }
@@ -210,15 +223,17 @@ async function checkForNewStreams() {
     
     for (const streamId of Array.from(processedStreams)) {
       if (!activeLiveIds.has(streamId)) {
-        console.log(`🛑 Stream ended, removing from tracking: ${streamId}`);
+        console.log(`[ENDED] Stream ended, removing from tracking: ${streamId}`);
         processedStreams.delete(streamId);
       }
     }
     
     if (removedCount > 0) {
-      console.log(`🧹 Cleaned up ${removedCount} ended stream(s)`);
+      console.log(`----------------------------------------------------------------`);
+      console.log(`[CLEANUP] Cleaned up ${removedCount} ended stream(s)`);
+      console.log(`----------------------------------------------------------------`);
     }
-    console.log(`📊 Active streams: ${activeLiveIds.size}, Tracked: ${processedStreams.size}`);
+    console.log(`[STATS] Active streams: ${activeLiveIds.size}, Tracked: ${processedStreams.size}`);
     
     if (currentLives.length === 0) {
       // No streams currently, but don't log spam
@@ -230,7 +245,8 @@ async function checkForNewStreams() {
     
     return newStreamsCount;
   } catch (error) {
-    console.error('❌ Error checking for new streams:', error.message);
+    console.error('[ERROR] Error checking for new streams:', error.message);
+    console.error('----------------------------------------------------------------');
     return 0;
   }
 }
@@ -239,25 +255,31 @@ async function checkForNewStreams() {
  * Main monitoring loop
  */
 async function startMonitoring() {
-  console.log('🚀 Starting Live Stream Monitor');
-  console.log(`📊 Seller ID: ${SELLER_ID}`);
-  console.log(`🔄 Check interval: ${CHECK_INTERVAL / 1000} seconds`);
-  console.log(`🌐 Bridge URL: ${BRIDGE_URL}`);
-  console.log(`🔐 Auth refresh: Enabled (auto-refresh after ${MAX_AUTH_FAILURES} failures)`);
-  console.log(`\n👀 Monitoring for new live streams...\n`);
+  console.log('\n================================================================');
+  console.log('[START] Starting Live Stream Monitor');
+  console.log('================================================================');
+  console.log(`[CONFIG] Seller ID: ${SELLER_ID}`);
+  console.log(`[CONFIG] Check interval: ${CHECK_INTERVAL / 1000} seconds`);
+  console.log(`[CONFIG] Bridge URL: ${BRIDGE_URL}`);
+  console.log(`[CONFIG] Auth refresh: Enabled (auto-refresh after ${MAX_AUTH_FAILURES} failures)`);
+  console.log('================================================================');
+  console.log(`[MONITOR] Monitoring for new live streams...`);
+  console.log('================================================================\n');
 
   // Initial check
   const initialCount = await checkForNewStreams();
   if (initialCount > 0) {
-    console.log(`\n✨ Found ${initialCount} stream(s) on startup`);
+    console.log(`\n[FOUND] Found ${initialCount} stream(s) on startup`);
+    console.log('----------------------------------------------------------------');
   } else {
-    console.log('⏳ No active streams found. Waiting for new streams...');
+    console.log('[WAIT] No active streams found. Waiting for new streams...');
+    console.log('----------------------------------------------------------------');
   }
 
   // Start monitoring loop
   setInterval(async () => {
     const timestamp = new Date().toLocaleString();
-    process.stdout.write(`\r⏱️  Last check: ${timestamp} | Monitoring ${processedStreams.size} stream(s)...`);
+    process.stdout.write(`\r[TIME] Last check: ${timestamp} | Monitoring ${processedStreams.size} stream(s)...`);
     
     const newStreamsCount = await checkForNewStreams();
     
@@ -269,8 +291,10 @@ async function startMonitoring() {
 
   // Handle graceful shutdown
   process.on('SIGINT', () => {
-    console.log('\n\n👋 Shutting down monitor...');
-    console.log(`📊 Total streams processed: ${processedStreams.size}`);
+    console.log('\n\n================================================================');
+    console.log('[SHUTDOWN] Shutting down monitor...');
+    console.log(`[STATS] Total streams processed: ${processedStreams.size}`);
+    console.log('================================================================');
     process.exit(0);
   });
 }
@@ -278,7 +302,9 @@ async function startMonitoring() {
 // Start monitoring
 if (require.main === module) {
   startMonitoring().catch(error => {
-    console.error('❌ Fatal error:', error);
+    console.error('\n================================================================');
+    console.error('[ERROR] Fatal error:', error);
+    console.error('================================================================');
     process.exit(1);
   });
 }
