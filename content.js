@@ -931,19 +931,26 @@
     const showTimeHours = extractShowTime();
     const tips = extractTips();
     
-    // Stale data detection - if values unchanged for 5 scrapes, assume stream ended
+    // Stale data detection - if values unchanged for 10 scrapes, verify stream end before marking as ended
     if (grossSales !== null && estimatedOrders !== null) {
       if (grossSales === lastGrossSales && estimatedOrders === lastEstimatedOrders && grossSales > 0) {
         staleCount++;
-        if (staleCount >= 5) {
-          console.log('[Whatnot Scraper] Data stale for 5 consecutive scrapes (sales and orders unchanged), assuming stream ended');
-          // Stop monitoring interval
-          if (monitoringInterval) {
-            clearInterval(monitoringInterval);
-            monitoringInterval = null;
+        if (staleCount >= 10) {
+          // Don't just assume ended — verify with isStreamEnded() first
+          const confirmedEnded = isStreamEnded();
+          if (confirmedEnded) {
+            console.log('[Whatnot Scraper] Data stale for 10 scrapes AND stream end confirmed — marking as ended');
+            // Stop monitoring interval
+            if (monitoringInterval) {
+              clearInterval(monitoringInterval);
+              monitoringInterval = null;
+            }
+            // Mark as ended - will be set in data object below
+            finalDataSent = true;
+          } else {
+            console.log('[Whatnot Scraper] Data stale but live indicators still present — just a slow period, continuing to monitor');
+            staleCount = 0; // Reset counter, stream is still live
           }
-          // Mark as ended - will be set in data object below
-          finalDataSent = true;
         }
       } else {
         staleCount = 0; // Reset counter when data changes
