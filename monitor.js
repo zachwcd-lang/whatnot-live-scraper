@@ -9,6 +9,9 @@
 
 const axios = require('axios');
 
+// Configure axios defaults
+axios.defaults.timeout = 30000; // 30 second timeout
+
 // Configuration
 const GRAPHQL_URL = 'https://www.whatnot.com/services/graphql';
 const BRIDGE_URL = process.env.BRIDGE_URL || 'http://localhost:3001';
@@ -112,7 +115,7 @@ async function getCurrentLives(authHeaders) {
 
     // Success - reset auth failure counter
     consecutiveAuthFailures = 0;
-    return response.data.data.currentLives || [];
+    return response?.data?.data?.currentLives || [];
     
   } catch (error) {
     // Check if it's an authentication error
@@ -171,9 +174,6 @@ async function processNewStreams(streams) {
 
   for (const stream of streams) {
     if (!processedStreams.has(stream.id)) {
-      newStreamsFound++;
-      processedStreams.add(stream.id);
-      
       const streamUrl = `https://www.whatnot.com/dashboard/live/${stream.id}`;
       
       console.log(`\n================================================================`);
@@ -191,6 +191,9 @@ async function processNewStreams(streams) {
         await navigateToStream(streamUrl);
         console.log('[SUCCESS] Chrome navigated successfully. Extension can now scrape.');
         console.log('----------------------------------------------------------------');
+        // Only add to Set AFTER successful navigation
+        processedStreams.add(stream.id);
+        newStreamsFound++;
         
         // Wait a bit before processing next stream
         if (newStreamsFound < streams.length) {
@@ -198,7 +201,9 @@ async function processNewStreams(streams) {
         }
       } catch (error) {
         console.error('[ERROR] Failed to navigate to stream:', error.message);
+        console.log('[RETRY] Stream will be retried on next check cycle');
         console.error('----------------------------------------------------------------');
+        // Don't add to Set - will retry next cycle
       }
     }
   }
@@ -217,23 +222,29 @@ async function checkForNewStreams() {
     // Get current live streams
     const currentLives = await getCurrentLives(authHeaders);
     
-    // Clean up ended streams - remove from tracking if no longer active
-    const activeLiveIds = new Set(currentLives.map(s => s.id));
-    const removedCount = Array.from(processedStreams).filter(id => !activeLiveIds.has(id)).length;
-    
-    for (const streamId of Array.from(processedStreams)) {
-      if (!activeLiveIds.has(streamId)) {
-        console.log(`[ENDED] Stream ended, removing from tracking: ${streamId}`);
-        processedStreams.delete(streamId);
+    // Clean up ended streams - BUT only if we got a valid API response
+    // (don't cleanup if currentLives is empty due to an error)
+    if (currentLives.length > 0 || processedStreams.size === 0) {
+      const activeLiveIds = new Set(currentLives.map(s => s.id));
+      const removedCount = Array.from(processedStreams).filter(id => !activeLiveIds.has(id)).length;
+      
+      for (const streamId of Array.from(processedStreams)) {
+        if (!activeLiveIds.has(streamId)) {
+          console.log(`[ENDED] Stream ended, removing from tracking: ${streamId}`);
+          processedStreams.delete(streamId);
+        }
       }
+      
+      if (removedCount > 0) {
+        console.log(`----------------------------------------------------------------`);
+        console.log(`[CLEANUP] Cleaned up ${removedCount} ended stream(s)`);
+        console.log(`----------------------------------------------------------------`);
+      }
+      console.log(`[STATS] Active streams: ${activeLiveIds.size}, Tracked: ${processedStreams.size}`);
+    } else if (processedStreams.size > 0) {
+      console.log(`[WARNING] API returned empty but we're tracking ${processedStreams.size} streams - skipping cleanup (possible API error)`);
+      console.log(`[STATS] Tracked: ${processedStreams.size} (no active streams from API)`);
     }
-    
-    if (removedCount > 0) {
-      console.log(`----------------------------------------------------------------`);
-      console.log(`[CLEANUP] Cleaned up ${removedCount} ended stream(s)`);
-      console.log(`----------------------------------------------------------------`);
-    }
-    console.log(`[STATS] Active streams: ${activeLiveIds.size}, Tracked: ${processedStreams.size}`);
     
     if (currentLives.length === 0) {
       // No streams currently, but don't log spam
