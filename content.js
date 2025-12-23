@@ -263,51 +263,131 @@
 
   /**
    * Extract Tips value from the page
-   * Uses same pattern as Gross Sales and Estimated Orders extraction
+   * Looks for Tips in the stats section (same area as Gross Sales and Estimated Orders)
+   * Avoids matching tip buttons ($1, $5, $10) by finding the stats container first
    * @returns {number|null} - Tips amount or null if not found
    */
   function extractTips() {
-    // Strategy 1: Find label and traverse DOM
-    const labelElement = findElementByText('Tips');
-    if (labelElement) {
-      const valueElement = findValueElement(labelElement);
-      if (valueElement) {
-        const valueText = valueElement.textContent || '';
-        const parsed = parseDollarAmount(valueText);
-        if (parsed !== null) return parsed;
-      }
-      
-      // Try parent container text
-      const parentText = labelElement.parentElement?.textContent || '';
-      const parsed = parseDollarAmount(parentText);
-      if (parsed !== null) return parsed;
-      
-      // Try grandparent container text
-      const grandparentText = labelElement.parentElement?.parentElement?.textContent || '';
-      const parsed2 = parseDollarAmount(grandparentText);
-      if (parsed2 !== null) return parsed2;
-    }
-    
-    // Strategy 2: Search entire page for "Tips" followed by dollar amount
     try {
       const allElements = Array.from(document.querySelectorAll('*'));
+
+      // Strategy 1: Find the stats container by locating "Gross Sales" first
+      // Then look for Tips value in the same container
+      const grossSalesElement = allElements.find(el => {
+        const text = el.textContent || '';
+        return text.trim() === 'Gross Sales';
+      });
+
+      if (grossSalesElement) {
+        // Walk up the DOM to find a container that includes Gross Sales, Estimated Orders, AND Tips
+        let container = grossSalesElement.parentElement;
+        let depth = 0;
+
+        while (container && depth < 8) {
+          const containerText = container.textContent || '';
+
+          // Check if this container has all three stats - this is the stats section
+          if (containerText.includes('Gross Sales') &&
+              containerText.includes('Estimated Orders') &&
+              containerText.includes('Tips')) {
+
+            // Find "Tips" label within this stats container
+            const containerChildren = Array.from(container.querySelectorAll('*'));
+            const tipsLabelInStats = containerChildren.find(el => {
+              const text = el.textContent || '';
+              return text.trim() === 'Tips';
+            });
+
+            if (tipsLabelInStats) {
+              // Look for dollar amount in parent/siblings of the Tips label
+              const parent = tipsLabelInStats.parentElement;
+              if (parent) {
+                const parentText = parent.textContent || '';
+                // Extract dollar amount from parent (contains both "Tips" and value)
+                const dollarMatch = parentText.match(/\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/);
+                if (dollarMatch) {
+                  const cleaned = dollarMatch[1].replace(/,/g, '');
+                  const parsed = parseFloat(cleaned);
+                  if (!isNaN(parsed)) {
+                    console.log('[Whatnot Scraper] Found Tips in stats container:', parsed);
+                    return parsed;
+                  }
+                }
+
+                // Try grandparent if parent didn't have the value
+                const grandparent = parent.parentElement;
+                if (grandparent) {
+                  const gpText = grandparent.textContent || '';
+                  // Look for "Tips" followed by dollar amount specifically
+                  const tipsMatch = gpText.match(/Tips[:\s]*\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/i);
+                  if (tipsMatch) {
+                    const cleaned = tipsMatch[1].replace(/,/g, '');
+                    const parsed = parseFloat(cleaned);
+                    if (!isNaN(parsed)) {
+                      console.log('[Whatnot Scraper] Found Tips via grandparent:', parsed);
+                      return parsed;
+                    }
+                  }
+                }
+              }
+            }
+
+            // Fallback: Search container text for "Tips$X.XX" pattern
+            const tipsMatch = containerText.match(/Tips[:\s]*\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/i);
+            if (tipsMatch) {
+              const cleaned = tipsMatch[1].replace(/,/g, '');
+              const parsed = parseFloat(cleaned);
+              if (!isNaN(parsed)) {
+                console.log('[Whatnot Scraper] Found Tips via container pattern:', parsed);
+                return parsed;
+              }
+            }
+
+            break; // Found the stats container, stop walking up
+          }
+
+          container = container.parentElement;
+          depth++;
+        }
+      }
+
+      // Strategy 2: Search for elements containing all three stats together
+      // This catches cases where Strategy 1 missed
       for (const el of allElements) {
         const text = el.textContent || '';
-        if (text.includes('Tips')) {
-          // Look for dollar amount in this element or nearby
-          const dollarMatch = text.match(/Tips[:\s]*\$?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/i);
-          if (dollarMatch) {
-            const cleaned = dollarMatch[1].replace(/,/g, '');
+
+        // Must contain all three stat labels to be the stats section
+        if (text.includes('Gross Sales') &&
+            text.includes('Estimated Orders') &&
+            text.includes('Tips')) {
+
+          // Look for Tips followed by dollar amount
+          const tipsMatch = text.match(/Tips[:\s]*\$(\d{1,3}(?:,\d{3})*\.\d{2})/i);
+          if (tipsMatch) {
+            const cleaned = tipsMatch[1].replace(/,/g, '');
             const parsed = parseFloat(cleaned);
-            if (!isNaN(parsed)) return parsed;
+            if (!isNaN(parsed)) {
+              console.log('[Whatnot Scraper] Found Tips in stats section:', parsed);
+              return parsed;
+            }
+          }
+
+          // Check for $0.00 tips
+          const zeroMatch = text.match(/Tips[:\s]*\$0(?:\.00)?/i);
+          if (zeroMatch) {
+            console.log('[Whatnot Scraper] Found Tips = $0');
+            return 0;
           }
         }
       }
+
+      console.log('[Whatnot Scraper] Could not find Tips in stats section');
+      return null;
+
     } catch (error) {
-      console.error('[Whatnot Scraper] Error in fallback Tips extraction:', error);
+      console.error('[Whatnot Scraper] Error extracting Tips:', error);
+      return null;
     }
-    
-    return null;
   }
 
   /**
